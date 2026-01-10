@@ -81,6 +81,9 @@ function nirsTopoplot(plotData, time)
 
     end
 
+    % extract chans for topoplot
+    chansToPlot = ismember({chanlocs.labels}, selectedChannels);
+
     % substract?
     nCond = numel(condNames);
 
@@ -154,7 +157,7 @@ function nirsTopoplot(plotData, time)
             end
 
             nexttile(tiled_topoFig, condIdx);
-            topoplot(mean(dataToPlot, 2), chanlocs, 'emarker', {'.', 'k', 18, 1});
+            topoplot(mean(dataToPlot, 2), chanlocs(chansToPlot), 'emarker', {'.', 'k', 18, 1});
             clim(colorLimits);
             title(condNames{condIdx}, 'FontName', 'Times New Roman', 'FontSize', 24);
         end
@@ -223,7 +226,7 @@ function nirsTopoplot(plotData, time)
             end
 
             nexttile(tiled_topoFig, condIdx);
-            topoplot(mean(dataToPlot, 2), chanlocs, 'emarker', {'.', 'k', 18, 1});
+            topoplot(mean(dataToPlot, 2), chanlocs(chansToPlot), 'emarker', {'.', 'k', 18, 1});
             clim(colorLimits);
             title(condNames{condIdx}, 'FontName', 'Times New Roman', 'FontSize', 24);
         end
