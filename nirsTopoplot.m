@@ -1,3 +1,9 @@
+%   Author: Dino Soldic
+%   Email: dino.soldic@urjc.es
+%   Date: 2026-01-12
+%
+%   See also NIRSAnalysis
+
 function nirsTopoplot(plotData, time)
 
     if nargin < 1
@@ -106,6 +112,9 @@ function nirsTopoplot(plotData, time)
         doGroupSubstract = questdlg('Do you wish to also plot group differences?', 'Group Substraction', 'Yes', 'No', 'Yes');
         if strcmp(doGroupSubstract, 'Yes'), doGroupSubstract = true; else, doGroupSubstract = false; end
     end
+
+    doGroupMean = questdlg('Do you wish to also plot group means?', 'Group Means', 'Yes', 'No', 'Yes');
+    if strcmp(doGroupMean, 'Yes'), doGroupMean = true; else, doGroupMean = false; end
 
     nGrp = numel(groupNames);
 
@@ -238,6 +247,59 @@ function nirsTopoplot(plotData, time)
         cb.FontSize = 24;
         cb.Limits = colorLimits;
         cb.Ticks = [colorLimits(1), 0, colorLimits(2)];
+    end
+
+    % group mean of conditions
+    if doGroupMean
+
+        for grpIdx = 1:nGrp
+
+            topoFig = figure('Name', sprintf('Mean of %s', groupNames{grpIdx}), 'NumberTitle', 'off', 'Units', 'normalized', 'OuterPosition', [0 0 1 1]);
+
+            dataToPlot = zeros(numel(chanCombos), length(time));
+            allVals = [];
+
+            for chanIdx = 1:numel(chanCombos)
+
+                valsAllCond = zeros(nCond, length(time));
+
+                for condIdx = 1:nCond
+                    vals = mean(plotData.(groupNames{grpIdx}).(condNames{condIdx}).(chanCombos{chanIdx}), 2);
+
+                    if doSubstractCond
+                        vals = vals - mean(plotData.(groupNames{grpIdx}).(subCond).(chanCombos{chanIdx}), 2);
+                    end
+
+                    valsAllCond(condIdx, :) = vals;
+                end
+
+                % average across conditions
+                meanVals = mean(valsAllCond, 1);
+
+                dataToPlot(chanIdx, :) = meanVals;
+                allVals = [allVals; meanVals(:)];
+            end
+
+            % --- Symmetric + rounded color limits ---
+            absMax = max(abs(allVals)); % biggest absolute value
+            scale = 10 ^ floor(log10(absMax)); % power-of-ten scaling
+            niceMax = floor(absMax / scale) * scale / 2; % round to nearest 0.5 step
+            colorLimits = [-niceMax, niceMax];
+
+            % plot
+            topoplot(mean(dataToPlot, 2), chanlocs(chansToPlot), 'emarker', {'.', 'k', 18, 1});
+            clim(colorLimits);
+
+            figure(topoFig);
+
+            cb = colorbar('Position', [0.04, 0.6, 0.01, 0.3]);
+            cb.FontName = 'Times New Roman';
+            cb.FontSize = 24;
+            cb.Limits = colorLimits;
+            cb.Ticks = [colorLimits(1), 0, colorLimits(2)];
+
+        end
+
     end
 
 end
