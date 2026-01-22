@@ -202,66 +202,111 @@ function NIRSAnalysis(ALLDATA)
         for condIdx = 1:nCond
             cond = condNames{condOpt(condIdx)};
 
+            allG1 = []; allG2 = [];
+
             for chanIdx = 1:nChan
                 chan = chanCombos{chanIdx};
 
                 if doSubstractCond
-                    groupOneData = AnalData.(groupNames{1}).(cond).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan);
-                    groupTwoData = AnalData.(groupNames{2}).(cond).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan);
+                    g1 = AnalData.(groupNames{1}).(cond).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan);
+                    g2 = AnalData.(groupNames{2}).(cond).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan);
                 else
-                    groupOneData = AnalData.(groupNames{1}).(cond).(chan);
-                    groupTwoData = AnalData.(groupNames{2}).(cond).(chan);
-
+                    g1 = AnalData.(groupNames{1}).(cond).(chan);
+                    g2 = AnalData.(groupNames{2}).(cond).(chan);
                 end
 
-                for timeIdx = 1:nTime
+                allG1(:, :, chanIdx) = g1;
+                allG2(:, :, chanIdx) = g2;
+            end
 
-                    % t-test across subjects at this time point
-                    [~, ~, ~, stats] = ttest2(groupOneData(timeIdx, :), groupTwoData(timeIdx, :));
+            % real t values
+            for c = 1:nChan
 
-                    allData = [groupOneData(timeIdx, :), groupTwoData(timeIdx, :)];
-
-                    nTmpts1 = length(groupOneData(timeIdx, :));
-                    permT = zeros(nPerm, 1);
-
-                    if useParallel % run in parallel if toolbox installed for performance
-
-                        % compute permuted t tests
-                        parfor permIdx = 1:nPerm
-
-                            permDataIdx = randperm(length(allData));
-                            permGroupOneData = allData(permDataIdx(1:nTmpts1));
-                            permGroupTwoData = allData(permDataIdx(nTmpts1 + 1:end));
-
-                            [~, ~, ~, permStats] = ttest2(permGroupOneData, permGroupTwoData);
-                            permT(permIdx) = permStats.tstat;
-                        end
-
-                    else
-
-                        for permIdx = 1:nPerm
-
-                            permDataIdx = randperm(length(allData));
-                            permGroupOneData = allData(permDataIdx(1:nTmpts1));
-                            permGroupTwoData = allData(permDataIdx(nTmpts1 + 1:end));
-
-                            [~, ~, ~, permStats] = ttest2(permGroupOneData, permGroupTwoData);
-                            permT(permIdx) = permStats.tstat;
-                        end
-
-                    end
-
-                    tVals(chanIdx, timeIdx, condIdx) = stats.tstat;
-                    pVals(chanIdx, timeIdx, condIdx) = mean(abs(permT) >= abs(stats.tstat));
-                    hVals(chanIdx, timeIdx, condIdx) = pVals(chanIdx, timeIdx, condIdx) < p;
-
+                for t = 1:nTime
+                    [~, ~, ~, stats] = ttest2(allG1(t, :, c), allG2(t, :, c));
+                    tVals(c, t, condIdx) = stats.tstat;
                 end
 
             end
 
-            disp("Mass-Uni Independent T-test for condition " + cond + " done");
+            % null t values
+            combinedData = cat(2, allG1, allG2); % Combine groups along subject dimension
+            nSubj1 = size(allG1, 2);
+            maxT_Null = zeros(nPerm, 1);
+
+            if useParallel
+
+                parfor permIdx = 1:nPerm
+                    % Shuffle subject labels across the whole dataset
+                    permIdxs = randperm(size(combinedData, 2));
+                    permG1 = combinedData(:, permIdxs(1:nSubj1), :);
+                    permG2 = combinedData(:, permIdxs(nSubj1 + 1:end), :);
+
+                    % Local t-stats for this shuffle
+                    shuffTs = zeros(nTime, nChan);
+
+                    for c = 1:nChan
+
+                        for t = 1:nTime
+                            % Standard t-test on shuffled subtracted data
+                            m1 = mean(permG1(t, :, c)); m2 = mean(permG2(t, :, c));
+                            v1 = var(permG1(t, :, c)); v2 = var(permG2(t, :, c));
+                            n1 = nSubj1; n2 = size(combinedData, 2) - nSubj1;
+                            % Fast t-stat formula for parfor speed
+                            t_stat = (m1 - m2) / sqrt(v1 / n1 + v2 / n2);
+                            shuffTs(t, c) = t_stat;
+                        end
+
+                    end
+
+                    % Store only the highest absolute T from the entire shuffle
+                    maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                end
+
+            else
+
+                for permIdx = 1:nPerm
+                    % Shuffle subject labels across the whole dataset
+                    permIdxs = randperm(size(combinedData, 2));
+                    permG1 = combinedData(:, permIdxs(1:nSubj1), :);
+                    permG2 = combinedData(:, permIdxs(nSubj1 + 1:end), :);
+
+                    % Local t-stats for this shuffle
+                    shuffTs = zeros(nTime, nChan);
+
+                    for c = 1:nChan
+
+                        for t = 1:nTime
+                            % Standard t-test on shuffled subtracted data
+                            m1 = mean(permG1(t, :, c)); m2 = mean(permG2(t, :, c));
+                            v1 = var(permG1(t, :, c)); v2 = var(permG2(t, :, c));
+                            n1 = nSubj1; n2 = size(combinedData, 2) - nSubj1;
+                            % Fast t-stat formula for parfor speed
+                            t_stat = (m1 - m2) / sqrt(v1 / n1 + v2 / n2);
+                            shuffTs(t, c) = t_stat;
+                        end
+
+                    end
+
+                    % Store only the highest absolute T from the entire shuffle
+                    maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                end
+
+            end
+
+            % compare
+            for c = 1:nChan
+
+                for t = 1:nTime
+                    pVals(c, t, condIdx) = mean(maxT_Null >= abs(tVals(c, t, condIdx)));
+                    hVals(c, t, condIdx) = pVals(c, t, condIdx) < p;
+                end
+
+            end
 
         end
+
+        disp("Mass-Uni Independent T-test for condition " + cond + " done");
 
         % Make results file and save
         results = struct();
@@ -327,74 +372,102 @@ function NIRSAnalysis(ALLDATA)
         nChan = numel(chanCombos);
         nTime = length(time);
 
-        tVals = zeros(nChan, nTime);
-        pVals = zeros(nChan, nTime);
-        hVals = zeros(nChan, nTime);
+        allG1 = [];
+        allG2 = [];
 
         for chanIdx = 1:nChan
             chan = chanCombos{chanIdx};
-            groupOneData = [];
-            groupTwoData = [];
+            g1_tmp = []; g2_tmp = [];
 
             for condIdx = 1:nCond
 
                 if doSubstractCond
-                    groupOneData = [groupOneData, AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan)]; %#ok<*AGROW>
-                    groupTwoData = [groupTwoData, AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
-
+                    dat1 = AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan) - ...
+                        AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan);
+                    dat2 = AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan) - ...
+                        AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan);
                 else
-                    groupOneData = [groupOneData, AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan)];
-                    groupTwoData = [groupTwoData, AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan)];
+                    dat1 = AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan);
+                    dat2 = AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan);
                 end
 
+                g1_tmp = [g1_tmp, dat1]; %#ok<*AGROW>
+                g2_tmp = [g2_tmp, dat2];
             end
 
-            for timeIdx = 1:nTime
+            allG1(:, :, chanIdx) = g1_tmp;
+            allG2(:, :, chanIdx) = g2_tmp;
+        end
 
-                % t-test across subjects at this time point
-                [~, ~, ~, stats] = ttest2(groupOneData(timeIdx, :), groupTwoData(timeIdx, :));
+        % Calculate Real T - Values
+        tVals = zeros(nChan, nTime);
 
-                allData = [groupOneData(timeIdx, :), groupTwoData(timeIdx, :)];
+        for c = 1:nChan
 
-                nTmpts1 = length(groupOneData(timeIdx, :));
-                permT = zeros(nPerm, 1);
-
-                if useParallel % run in parallel if toolbox installed for performance
-
-                    % compute permuted t tests
-                    parfor permIdx = 1:nPerm
-
-                        permDataIdx = randperm(length(allData));
-                        permGroupOneData = allData(permDataIdx(1:nTmpts1));
-                        permGroupTwoData = allData(permDataIdx(nTmpts1 + 1:end));
-
-                        [~, ~, ~, permStats] = ttest2(permGroupOneData, permGroupTwoData);
-                        permT(permIdx) = permStats.tstat;
-                    end
-
-                else
-
-                    for permIdx = 1:nPerm
-
-                        permDataIdx = randperm(length(allData));
-                        permGroupOneData = allData(permDataIdx(1:nTmpts1));
-                        permGroupTwoData = allData(permDataIdx(nTmpts1 + 1:end));
-
-                        [~, ~, ~, permStats] = ttest2(permGroupOneData, permGroupTwoData);
-                        permT(permIdx) = permStats.tstat;
-                    end
-
-                end
-
-                tVals(chanIdx, timeIdx) = stats.tstat;
-                pVals(chanIdx, timeIdx) = mean(abs(permT) >= abs(stats.tstat));
-                hVals(chanIdx, timeIdx) = pVals(chanIdx, timeIdx) < p;
-
+            for t = 1:nTime
+                [~, ~, ~, stats] = ttest2(allG1(t, :, c), allG2(t, :, c));
+                tVals(c, t) = stats.tstat;
             end
 
         end
 
-        labels = strjoin(condNames(condOpt), "_");
+        % Max - T Permutation
+        combinedData = cat(2, allG1, allG2);
+        nSubj1 = size(allG1, 2);
+        nTotal = size(combinedData, 2);
+        maxT_Null = zeros(nPerm, 1);
+
+        if useParallel % run in parallel if toolbox installed for performance
+
+            % compute permuted t tests
+            parfor permIdx = 1:nPerm
+                permIdxs = randperm(nTotal);
+                pG1 = combinedData(:, permIdxs(1:nSubj1), :);
+                pG2 = combinedData(:, permIdxs(nSubj1 + 1:end), :);
+
+                % Calculate all T-stats for this shuffle
+                m1 = mean(pG1, 2); m2 = mean(pG2, 2);
+                v1 = var(pG1, 0, 2); v2 = var(pG2, 0, 2);
+
+                shuffTs = (m1 - m2) ./ sqrt(v1 / nSubj1 + v2 / (nTotal - nSubj1));
+
+                % Store only the absolute maximum T found anywhere in this shuffle
+                maxT_Null(permIdx) = max(abs(shuffTs(:)));
+            end
+
+        else
+
+            for permIdx = 1:nPerm
+                permIdxs = randperm(nTotal);
+                pG1 = combinedData(:, permIdxs(1:nSubj1), :);
+                pG2 = combinedData(:, permIdxs(nSubj1 + 1:end), :);
+
+                % Calculate all T-stats for this shuffle
+                m1 = mean(pG1, 2); m2 = mean(pG2, 2);
+                v1 = var(pG1, 0, 2); v2 = var(pG2, 0, 2);
+
+                shuffTs = (m1 - m2) ./ sqrt(v1 / nSubj1 + v2 / (nTotal - nSubj1));
+
+                % Store only the absolute maximum T found anywhere in this shuffle
+                maxT_Null(permIdx) = max(abs(shuffTs(:)));
+            end
+
+        end
+
+        % Compare
+        pVals = zeros(nChan, nTime);
+
+        for c = 1:nChan
+
+            for t = 1:nTime
+                pVals(c, t) = mean(maxT_Null >= abs(tVals(c, t)));
+            end
+
+        end
+
+        hVals = pVals < p;
+
+        labels = string(strjoin(condNames(condOpt), "_"));
 
         disp("Mass-Uni Independent T-test for groups done");
 
@@ -474,61 +547,86 @@ function NIRSAnalysis(ALLDATA)
             for condIdx = 1:nCondMax
                 condIdx2 = condIdx + 1;
                 if condIdx2 > nCond, condIdx2 = 1; end
+                labels(condIdx) = sprintf("%s_%s", condNames{condOpt(condIdx)}, condNames{condOpt(condIdx2)});
+
+                diffData = [];
 
                 for chanIdx = 1:nChan
                     chan = chanCombos{chanIdx};
 
                     if doSubstractCond
-                        groupOneData = AnalData.(group).(condNames{condOpt(condIdx)}).(chan) - AnalData.(group).(condNames{subCondOpt}).(chan);
-                        groupTwoData = AnalData.(group).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(group).(condNames{subCondOpt}).(chan);
+                        g1 = AnalData.(group).(condNames{condOpt(condIdx)}).(chan) - AnalData.(group).(condNames{subCondOpt}).(chan);
+                        g2 = AnalData.(group).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(group).(condNames{subCondOpt}).(chan);
                     else
-                        groupOneData = AnalData.(group).(condNames{condOpt(condIdx)}).(chan);
-                        groupTwoData = AnalData.(group).(condNames{condOpt(condIdx2)}).(chan);
+                        g1 = AnalData.(group).(condNames{condOpt(condIdx)}).(chan);
+                        g2 = AnalData.(group).(condNames{condOpt(condIdx2)}).(chan);
                     end
 
-                    labels(condIdx) = sprintf("%s_%s", condNames{condOpt(condIdx)}, condNames{condOpt(condIdx2)});
+                    diffData(:, :, chanIdx) = g1 - g2; % The paired difference
+                end
 
-                    for timeIdx = 1:nTime
+                % Calculate Real T - Stats
+                currentTVals = zeros(nTime, nChan);
 
-                        % t-test across subjects at this time point
-                        [~, ~, ~, stats] = ttest(groupOneData(timeIdx, :), groupTwoData(timeIdx, :));
+                for c = 1:nChan
 
-                        dataDiff = groupOneData(timeIdx, :) - groupTwoData(timeIdx, :); % compute diff for dep t (Winkler et al 2016)
-
-                        permT = zeros(nPerm, 1);
-
-                        if useParallel % run in parallel if toolbox installed for performance
-
-                            % compute permuted t tests
-                            parfor permIdx = 1:nPerm
-
-                                flipSigns = (rand(size(dataDiff)) > 0.5) * 2 - 1; % *-1
-                                permDiff = dataDiff .* flipSigns;
-
-                                [~, ~, ~, permStats] = ttest(permDiff, 0);
-                                permT(permIdx) = permStats.tstat;
-                            end
-
-                        else
-
-                            for permIdx = 1:nPerm
-
-                                flipSigns = (rand(size(dataDiff)) > 0.5) * 2 - 1; % *-1
-                                permDiff = dataDiff .* flipSigns;
-
-                                [~, ~, ~, permStats] = ttest(permDiff, 0);
-                                permT(permIdx) = permStats.tstat;
-                            end
-
-                        end
-
-                        tVals(chanIdx, timeIdx, condIdx, grpIdx) = stats.tstat;
-                        pVals(chanIdx, timeIdx, condIdx, grpIdx) = mean(abs(permT) >= abs(stats.tstat));
-                        hVals(chanIdx, timeIdx, condIdx, grpIdx) = pVals(chanIdx, timeIdx, condIdx, grpIdx) < p; % t-test across subjects at this time point
-
+                    for t = 1:nTime
+                        [~, ~, ~, stats] = ttest(diffData(t, :, c));
+                        currentTVals(t, c) = stats.tstat;
                     end
 
                 end
+
+                % Max - T Permutation (Sign - Flipping)
+                nSubj = size(diffData, 2);
+                maxT_Null = zeros(nPerm, 1);
+
+                if useParallel
+
+                    parfor permIdx = 1:nPerm
+                        % Randomly flip signs for each subject (1 or -1)
+                        flipSigns = (rand(1, nSubj) > 0.5) * 2 - 1;
+                        % Multiply the same sign-flip across all time and channels for that subject
+                        permDiffs = diffData .* reshape(flipSigns, [1, nSubj, 1]);
+
+                        % Fast T-calculation: mean / (std/sqrt(n))
+                        m = mean(permDiffs, 2);
+                        s = std(permDiffs, 0, 2);
+                        shuffTs = m ./ (s / sqrt(nSubj));
+
+                        maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                    end
+
+                else
+
+                    for permIdx = 1:nPerm
+                        % Randomly flip signs for each subject (1 or -1)
+                        flipSigns = (rand(1, nSubj) > 0.5) * 2 - 1;
+                        % Multiply the same sign-flip across all time and channels for that subject
+                        permDiffs = diffData .* reshape(flipSigns, [1, nSubj, 1]);
+
+                        % Fast T-calculation: mean / (std/sqrt(n))
+                        m = mean(permDiffs, 2);
+                        s = std(permDiffs, 0, 2);
+                        shuffTs = m ./ (s / sqrt(nSubj));
+
+                        maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                    end
+
+                end
+
+                % Compare
+                for c = 1:nChan
+
+                    for t = 1:nTime
+                        tStat = currentTVals(t, c);
+                        tVals(c, t, condIdx, grpIdx) = tStat;
+                        pVals(c, t, condIdx, grpIdx) = mean(maxT_Null >= abs(tStat));
+                    end
+
+                end
+
+                hVals(:, :, condIdx, grpIdx) = pVals(:, :, condIdx, grpIdx) < p;
 
                 disp("Mass-Uni Dependent T-test for " + group + "-" + condNames{condOpt(condIdx)} + "_" + condNames{condOpt(condIdx2)} + " done");
             end
@@ -609,62 +707,87 @@ function NIRSAnalysis(ALLDATA)
         for condIdx = 1:nCondMax
             condIdx2 = condIdx + 1;
             if condIdx2 > nCond, condIdx2 = 1; end
+            labels(condIdx) = sprintf("%s_%s", condNames{condOpt(condIdx)}, condNames{condOpt(condIdx2)});
+
+            diffData = [];
 
             for chanIdx = 1:nChan
                 chan = chanCombos{chanIdx};
 
+                % Pool Group 1 and Group 2
                 if doSubstractCond
-                    groupOneData = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
-                    groupTwoData = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
-
+                    g1 = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan), ...
+                              AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
+                    g2 = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan), ...
+                              AnalData.(groupNames{2}).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
                 else
-                    groupOneData = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan)];
-                    groupTwoData = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx2)}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx2)}).(chan)];
+                    g1 = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan)];
+                    g2 = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx2)}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx2)}).(chan)];
                 end
 
-                labels(condIdx) = sprintf("%s_%s", condNames{condOpt(condIdx)}, condNames{condOpt(condIdx2)});
+                diffData(:, :, chanIdx) = g1 - g2;
+            end
 
-                for timeIdx = 1:nTime
+            % Calculate Real T-Stats
+            currentTVals = zeros(nTime, nChan);
 
-                    % t-test across subjects at this time point
-                    [~, ~, ~, stats] = ttest(groupOneData(timeIdx, :), groupTwoData(timeIdx, :));
+            for c = 1:nChan
 
-                    dataDiff = groupOneData(timeIdx, :) - groupTwoData(timeIdx, :); % compute diff for dep t (Winkler et al 2016)
-
-                    permT = zeros(nPerm, 1);
-
-                    if useParallel % run in parallel if toolbox installed for performance
-
-                        % compute permuted t tests
-                        parfor permIdx = 1:nPerm
-
-                            flipSigns = (rand(size(dataDiff)) > 0.5) * 2 - 1; % *-1
-                            permDiff = dataDiff .* flipSigns;
-
-                            [~, ~, ~, permStats] = ttest(permDiff, 0);
-                            permT(permIdx) = permStats.tstat;
-                        end
-
-                    else
-
-                        for permIdx = 1:nPerm
-
-                            flipSigns = (rand(size(dataDiff)) > 0.5) * 2 - 1; % *-1
-                            permDiff = dataDiff .* flipSigns;
-
-                            [~, ~, ~, permStats] = ttest(permDiff, 0);
-                            permT(permIdx) = permStats.tstat;
-                        end
-
-                    end
-
-                    tVals(chanIdx, timeIdx, condIdx) = stats.tstat;
-                    pVals(chanIdx, timeIdx, condIdx) = mean(abs(permT) >= abs(stats.tstat));
-                    hVals(chanIdx, timeIdx, condIdx) = pVals(chanIdx, timeIdx, condIdx) < p; % t-test across subjects at this time point
-
+                for t = 1:nTime
+                    [~, ~, ~, stats] = ttest(diffData(t, :, c));
+                    currentTVals(t, c) = stats.tstat;
                 end
 
             end
+
+            % Max-T Permutation (Sign-Flipping pooled subjects)
+            nSubjTotal = size(diffData, 2);
+            maxT_Null = zeros(nPerm, 1);
+
+            if useParallel
+
+                parfor permIdx = 1:nPerm
+                    % Flip signs for pooled subjects
+                    flipSigns = (rand(1, nSubjTotal) > 0.5) * 2 - 1;
+                    permDiffs = diffData .* reshape(flipSigns, [1, nSubjTotal, 1]);
+
+                    % Fast T-stat
+                    m = mean(permDiffs, 2);
+                    s = std(permDiffs, 0, 2);
+                    shuffTs = m ./ (s / sqrt(nSubjTotal));
+
+                    maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                end
+
+            else
+
+                for permIdx = 1:nPerm
+                    % Flip signs for pooled subjects
+                    flipSigns = (rand(1, nSubjTotal) > 0.5) * 2 - 1;
+                    permDiffs = diffData .* reshape(flipSigns, [1, nSubjTotal, 1]);
+
+                    % Fast T-stat
+                    m = mean(permDiffs, 2);
+                    s = std(permDiffs, 0, 2);
+                    shuffTs = m ./ (s / sqrt(nSubjTotal));
+
+                    maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                end
+
+            end
+
+            % Compare Real vs Null
+            for c = 1:nChan
+
+                for t = 1:nTime
+                    tStat = currentTVals(t, c);
+                    tVals(c, t, condIdx) = tStat;
+                    pVals(c, t, condIdx) = mean(maxT_Null >= abs(tStat));
+                end
+
+            end
+
+            hVals(:, :, condIdx) = pVals(:, :, condIdx) < p;
 
             disp("Mass-Uni Independent T-test for " + condNames{condOpt(condIdx)} + "_" + condNames{condOpt(condIdx2)} + " done");
         end
@@ -734,81 +857,92 @@ function NIRSAnalysis(ALLDATA)
         for condIdx = 1:nCond
             cond = condNames{condOpt(condIdx)};
 
-            groupOneData = zeros([size(AnalData.(groupNames{1}).(cond).(chanCombos{1})) nChan]);
-            groupTwoData = zeros([size(AnalData.(groupNames{2}).(cond).(chanCombos{1})) nChan]);
+            % Collect all channels to average them
+            g1_allChans = [];
+            g2_allChans = [];
 
             for chanIdx = 1:nChan
                 chan = chanCombos{chanIdx};
-
-                groupOneData(:, :, chanIdx) = AnalData.(groupNames{1}).(cond).(chan);
-                groupTwoData(:, :, chanIdx) = AnalData.(groupNames{2}).(cond).(chan);
-
+                g1_allChans(:, :, chanIdx) = AnalData.(groupNames{1}).(cond).(chan);
+                g2_allChans(:, :, chanIdx) = AnalData.(groupNames{2}).(cond).(chan);
             end
 
-            avgGroupOneData = mean(groupOneData, 3);
-            avgGroupTwoData = mean(groupTwoData, 3);
+            % Compute the Average Across Channels
+            avgG1 = mean(g1_allChans, 3);
+            avgG2 = mean(g2_allChans, 3);
 
             if doSubstractCond
-                groupOneDataSub = zeros([size(AnalData.(groupNames{1}).(condNames{subCondOpt}).(chanCombos{1})) nChan]);
-                groupTwoDataSub = zeros([size(AnalData.(groupNames{2}).(condNames{subCondOpt}).(chanCombos{1})) nChan]);
+                g1_sub_all = []; g2_sub_all = [];
 
                 for chanIdx = 1:nChan
                     chan = chanCombos{chanIdx};
-
-                    groupOneDataSub(:, :, chanIdx) = AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan);
-                    groupTwoDataSub(:, :, chanIdx) = AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan);
-
+                    g1_sub_all(:, :, chanIdx) = AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan);
+                    g2_sub_all(:, :, chanIdx) = AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan);
                 end
 
-                avgGroupOneData = avgGroupOneData - mean(groupOneDataSub, 3);
-                avgGroupTwoData = avgGroupTwoData - mean(groupTwoDataSub, 3);
+                avgG1 = avgG1 - mean(g1_sub_all, 3);
+                avgG2 = avgG2 - mean(g2_sub_all, 3);
             end
 
-            for timeIdx = 1:nTime
+            % Real T-stats
+            realT = zeros(nTime, 1);
 
-                % t-test across subjects at this time point
-                [~, ~, ~, stats] = ttest2(avgGroupOneData(timeIdx, :), avgGroupTwoData(timeIdx, :));
+            for t = 1:nTime
+                [~, ~, ~, stats] = ttest2(avgG1(t, :), avgG2(t, :));
+                realT(t) = stats.tstat;
+            end
 
-                allData = [avgGroupOneData(timeIdx, :), avgGroupTwoData(timeIdx, :)];
+            % Max-T Permutation
+            combinedData = [avgG1, avgG2];
+            nSubj1 = size(avgG1, 2);
+            nTotal = size(combinedData, 2);
+            maxT_Null = zeros(nPerm, 1);
 
-                nTmpts1 = length(avgGroupOneData(timeIdx, :));
-                permT = zeros(nPerm, 1);
+            if useParallel
 
-                if useParallel % run in parallel if toolbox installed for performance
+                parfor permIdx = 1:nPerm
+                    permIdxs = randperm(nTotal);
+                    pG1 = combinedData(:, permIdxs(1:nSubj1)); %#ok<*PFBNS>
+                    pG2 = combinedData(:, permIdxs(nSubj1 + 1:end));
 
-                    % compute permuted t tests
-                    parfor permIdx = 1:nPerm
+                    % Fast T-stat across all time points for this shuffle
+                    m1 = mean(pG1, 2); m2 = mean(pG2, 2);
+                    v1 = var(pG1, 0, 2); v2 = var(pG2, 0, 2);
 
-                        permDataIdx = randperm(length(allData));
-                        permGroupOneData = allData(permDataIdx(1:nTmpts1));
-                        permGroupTwoData = allData(permDataIdx(nTmpts1 + 1:end));
+                    shuffTs = (m1 - m2) ./ sqrt(v1 / nSubj1 + v2 / (nTotal - nSubj1));
 
-                        [~, ~, ~, permStats] = ttest2(permGroupOneData, permGroupTwoData);
-                        permT(permIdx) = permStats.tstat;
-                    end
-
-                else
-
-                    for permIdx = 1:nPerm
-
-                        permDataIdx = randperm(length(allData));
-                        permGroupOneData = allData(permDataIdx(1:nTmpts1));
-                        permGroupTwoData = allData(permDataIdx(nTmpts1 + 1:end));
-
-                        [~, ~, ~, permStats] = ttest2(permGroupOneData, permGroupTwoData);
-                        permT(permIdx) = permStats.tstat;
-                    end
-
+                    % Max T across the time dimension
+                    maxT_Null(permIdx) = max(abs(shuffTs));
                 end
 
-                tVals(timeIdx, condIdx) = stats.tstat;
-                pVals(timeIdx, condIdx) = mean(abs(permT) >= abs(stats.tstat));
-                hVals(timeIdx, condIdx) = pVals(timeIdx, condIdx) < p;
+            else
+
+                for permIdx = 1:nPerm
+                    permIdxs = randperm(nTotal);
+                    pG1 = combinedData(:, permIdxs(1:nSubj1));
+                    pG2 = combinedData(:, permIdxs(nSubj1 + 1:end));
+
+                    % Fast T-stat across all time points for this shuffle
+                    m1 = mean(pG1, 2); m2 = mean(pG2, 2);
+                    v1 = var(pG1, 0, 2); v2 = var(pG2, 0, 2);
+
+                    shuffTs = (m1 - m2) ./ sqrt(v1 / nSubj1 + v2 / (nTotal - nSubj1));
+
+                    % Max T across the time dimension
+                    maxT_Null(permIdx) = max(abs(shuffTs));
+                end
 
             end
+
+            % Compare
+            for t = 1:nTime
+                tVals(t, condIdx) = realT(t);
+                pVals(t, condIdx) = mean(maxT_Null >= abs(realT(t)));
+            end
+
+            hVals(:, condIdx) = pVals(:, condIdx) < p;
 
             disp("Average Mass-Uni Independent T-test for condition " + cond + " done");
-
         end
 
         % Make results file and save
@@ -871,85 +1005,86 @@ function NIRSAnalysis(ALLDATA)
         nChan = numel(chanCombos);
         nTime = length(time);
 
-        tVals = zeros(nTime, 1);
-        pVals = zeros(nTime, 1);
-        hVals = zeros(nTime, 1);
-
-        groupOneData = [];
-        groupTwoData = [];
+        g1_allChans = [];
+        g2_allChans = [];
 
         for chanIdx = 1:nChan
             chan = chanCombos{chanIdx};
-
-            groupOneDataFused = [];
-            groupTwoDataFused = [];
+            g1_fused = [];
+            g2_fused = [];
 
             for condIdx = 1:nCond
 
                 if doSubstractCond
-
-                    groupOneDataFused = [groupOneDataFused, AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan)];
-                    groupTwoDataFused = [groupTwoDataFused, AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
-
+                    dat1 = AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan) - ...
+                        AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan);
+                    dat2 = AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan) - ...
+                        AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan);
                 else
-
-                    groupOneDataFused = [groupOneDataFused, AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan)];
-                    groupTwoDataFused = [groupTwoDataFused, AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan)];
-
+                    dat1 = AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan);
+                    dat2 = AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan);
                 end
 
+                g1_fused = [g1_fused, dat1];
+                g2_fused = [g2_fused, dat2];
             end
 
-            groupOneData(:, :, chanIdx) = groupOneDataFused;
-            groupTwoData(:, :, chanIdx) = groupTwoDataFused;
+            g1_allChans(:, :, chanIdx) = g1_fused;
+            g2_allChans(:, :, chanIdx) = g2_fused;
+        end
+
+        % Average across channels
+        avgG1 = mean(g1_allChans, 3);
+        avgG2 = mean(g2_allChans, 3);
+
+        % Calculate Real T-Stats
+        realT = zeros(nTime, 1);
+
+        for t = 1:nTime
+            [~, ~, ~, stats] = ttest2(avgG1(t, :), avgG2(t, :));
+            realT(t) = stats.tstat;
+        end
+
+        % Permutation
+        combinedData = [avgG1, avgG2];
+        nSubj1 = size(avgG1, 2);
+        nTotal = size(combinedData, 2);
+        maxT_Null = zeros(nPerm, 1);
+
+        if useParallel
+
+            parfor permIdx = 1:nPerm
+                permIdxs = randperm(nTotal);
+                pG1 = combinedData(:, permIdxs(1:nSubj1));
+                pG2 = combinedData(:, permIdxs(nSubj1 + 1:end));
+
+                % Fast T-stat calculation for all time points
+                m1 = mean(pG1, 2); m2 = mean(pG2, 2);
+                v1 = var(pG1, 0, 2); v2 = var(pG2, 0, 2);
+                shuffTs = (m1 - m2) ./ sqrt(v1 / nSubj1 + v2 / (nTotal - nSubj1));
+
+                % Capture Max absolute T across the time dimension
+                maxT_Null(permIdx) = max(abs(shuffTs));
+            end
+
+        else
+
+            for permIdx = 1:nPerm
+                permIdxs = randperm(nTotal);
+                pG1 = combinedData(:, permIdxs(1:nSubj1));
+                pG2 = combinedData(:, permIdxs(nSubj1 + 1:end));
+                m1 = mean(pG1, 2); m2 = mean(pG2, 2);
+                v1 = var(pG1, 0, 2); v2 = var(pG2, 0, 2);
+                shuffTs = (m1 - m2) ./ sqrt(v1 / nSubj1 + v2 / (nTotal - nSubj1));
+                maxT_Null(permIdx) = max(abs(shuffTs));
+            end
 
         end
 
-        avgGroupOneData = mean(groupOneData, 3);
-        avgGroupTwoData = mean(groupTwoData, 3);
-
-        for timeIdx = 1:nTime
-
-            % t-test across subjects at this time point
-            [~, ~, ~, stats] = ttest2(avgGroupOneData(timeIdx, :), avgGroupTwoData(timeIdx, :));
-
-            allData = [avgGroupOneData(timeIdx, :), avgGroupTwoData(timeIdx, :)];
-
-            nTmpts1 = length(avgGroupOneData(timeIdx, :));
-            permT = zeros(nPerm, 1);
-
-            if useParallel % run in parallel if toolbox installed for performance
-
-                % compute permuted t tests
-                parfor permIdx = 1:nPerm
-
-                    permDataIdx = randperm(length(allData));
-                    permGroupOneData = allData(permDataIdx(1:nTmpts1));
-                    permGroupTwoData = allData(permDataIdx(nTmpts1 + 1:end));
-
-                    [~, ~, ~, permStats] = ttest2(permGroupOneData, permGroupTwoData);
-                    permT(permIdx) = permStats.tstat;
-                end
-
-            else
-
-                for permIdx = 1:nPerm
-
-                    permDataIdx = randperm(length(allData));
-                    permGroupOneData = allData(permDataIdx(1:nTmpts1));
-                    permGroupTwoData = allData(permDataIdx(nTmpts1 + 1:end));
-
-                    [~, ~, ~, permStats] = ttest2(permGroupOneData, permGroupTwoData);
-                    permT(permIdx) = permStats.tstat;
-                end
-
-            end
-
-            tVals(timeIdx) = stats.tstat;
-            pVals(timeIdx) = mean(abs(permT) >= abs(stats.tstat));
-            hVals(timeIdx) = pVals(timeIdx) < p;
-
-        end
+        % Compare
+        pVals = mean(maxT_Null >= abs(realT)', 1)';
+        tVals = realT;
+        hVals = pVals < p;
 
         labels = string(strjoin(condNames(condOpt), "_"));
 
@@ -1028,77 +1163,66 @@ function NIRSAnalysis(ALLDATA)
                 condIdx2 = condIdx + 1;
                 if condIdx2 > nCond, condIdx2 = 1; end
 
-                nRows = size(AnalData.(group).(condNames{condOpt(condIdx)}).(chanCombos{1}), 1);
-                nCols = size(AnalData.(group).(condNames{condOpt(condIdx)}).(chanCombos{1}), 2);
-                groupOneData = zeros(nRows, nCols, nChan);
-                groupTwoData = zeros(nRows, nCols, nChan);
+                % Collect and Average Channels
+                g1_all = []; g2_all = [];
 
-                if doSubstractCond
+                for chanIdx = 1:nChan
+                    chan = chanCombos{chanIdx};
 
-                    for chanIdx = 1:nChan
-                        chan = chanCombos{chanIdx};
+                    if doSubstractCond
+                        g1_all(:, :, chanIdx) = AnalData.(group).(condNames{condOpt(condIdx)}).(chan) - AnalData.(group).(condNames{subCondOpt}).(chan);
+                        g2_all(:, :, chanIdx) = AnalData.(group).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(group).(condNames{subCondOpt}).(chan);
+                    else
+                        g1_all(:, :, chanIdx) = AnalData.(group).(condNames{condOpt(condIdx)}).(chan);
+                        g2_all(:, :, chanIdx) = AnalData.(group).(condNames{condOpt(condIdx2)}).(chan);
+                    end
 
-                        groupOneData(:, :, chanIdx) = AnalData.(group).(condNames{condOpt(condIdx)}).(chan) - AnalData.(group).(condNames{subCondOpt}).(chan);
-                        groupTwoData(:, :, chanIdx) = AnalData.(group).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(group).(condNames{subCondOpt}).(chan);
+                end
 
+                avgG1 = mean(g1_all, 3);
+                avgG2 = mean(g2_all, 3);
+                labels(condIdx) = sprintf("%s_%s", condNames{condOpt(condIdx)}, condNames{condOpt(condIdx2)});
+
+                % Real Paired T-stats for all time points
+                realDiff = avgG1 - avgG2;
+                nSubj = size(realDiff, 2);
+
+                mu = mean(realDiff, 2);
+                sd = std(realDiff, 0, 2);
+                realT = mu ./ (sd ./ sqrt(nSubj));
+
+                % Permutation
+                maxT_Null = zeros(nPerm, 1);
+
+                if useParallel
+
+                    parfor permIdx = 1:nPerm
+                        % Randomly flip signs of the difference for each subject
+                        flipSigns = (rand(1, nSubj) > 0.5) * 2 - 1;
+                        permDiff = realDiff .* flipSigns;
+
+                        m_p = mean(permDiff, 2);
+                        s_p = std(permDiff, 0, 2);
+                        shuffTs = m_p ./ (s_p ./ sqrt(nSubj));
+
+                        maxT_Null(permIdx) = max(abs(shuffTs));
                     end
 
                 else
 
-                    for chanIdx = 1:nChan
-                        chan = chanCombos{chanIdx};
-
-                        groupOneData(:, :, chanIdx) = AnalData.(group).(condNames{condOpt(condIdx)}).(chan);
-                        groupTwoData(:, :, chanIdx) = AnalData.(group).(condNames{condOpt(condIdx2)}).(chan);
-
+                    for permIdx = 1:nPerm
+                        flipSigns = (rand(1, nSubj) > 0.5) * 2 - 1;
+                        permDiff = realDiff .* flipSigns;
+                        shuffTs = mean(permDiff, 2) ./ (std(permDiff, 0, 2) ./ sqrt(nSubj));
+                        maxT_Null(permIdx) = max(abs(shuffTs));
                     end
 
                 end
 
-                avgGroupOneData = mean(groupOneData, 3);
-                avgGroupTwoData = mean(groupTwoData, 3);
-
-                labels(condIdx) = sprintf("%s_%s", condNames{condOpt(condIdx)}, condNames{condOpt(condIdx2)});
-
-                for timeIdx = 1:nTime
-
-                    % t-test across subjects at this time point
-                    [~, ~, ~, stats] = ttest(avgGroupOneData(timeIdx, :), avgGroupTwoData(timeIdx, :));
-
-                    dataDiff = avgGroupOneData(timeIdx, :) - avgGroupTwoData(timeIdx, :); % compute diff for dep t (Winkler et al 2016)
-
-                    permT = zeros(nPerm, 1);
-
-                    if useParallel % run in parallel if toolbox installed for performance
-
-                        % compute permuted t tests
-                        parfor permIdx = 1:nPerm
-
-                            flipSigns = (rand(size(dataDiff)) > 0.5) * 2 - 1; % *-1
-                            permDiff = dataDiff .* flipSigns;
-
-                            [~, ~, ~, permStats] = ttest(permDiff, 0);
-                            permT(permIdx) = permStats.tstat;
-                        end
-
-                    else
-
-                        for permIdx = 1:nPerm
-
-                            flipSigns = (rand(size(dataDiff)) > 0.5) * 2 - 1; % *-1
-                            permDiff = dataDiff .* flipSigns;
-
-                            [~, ~, ~, permStats] = ttest(permDiff, 0);
-                            permT(permIdx) = permStats.tstat;
-                        end
-
-                    end
-
-                    tVals(timeIdx, condIdx, grpIdx) = stats.tstat;
-                    pVals(timeIdx, condIdx, grpIdx) = mean(abs(permT) >= abs(stats.tstat));
-                    hVals(timeIdx, condIdx, grpIdx) = pVals(timeIdx, condIdx, grpIdx) < p; % t-test across subjects at this time point
-
-                end
+                % Compare
+                tVals(:, condIdx, grpIdx) = realT;
+                pVals(:, condIdx, grpIdx) = mean(maxT_Null >= abs(realT)', 1)';
+                hVals(:, condIdx, grpIdx) = pVals(:, condIdx, grpIdx) < p;
 
                 disp("Average Mass-Uni Dependent T-test for " + group + "-" + condNames{condOpt(condIdx)} + "_" + condNames{condOpt(condIdx2)} + " done");
             end
@@ -1166,9 +1290,9 @@ function NIRSAnalysis(ALLDATA)
         nChan = numel(chanCombos);
         nTime = length(time);
 
-        tVals = zeros(nTime, nCond);
-        pVals = zeros(nTime, nCond);
-        hVals = zeros(nTime, nCond);
+        tVals = zeros(nTime, nCondMax);
+        pVals = zeros(nTime, nCondMax);
+        hVals = zeros(nTime, nCondMax);
 
         labels = strings(nCondMax, 1);
 
@@ -1177,76 +1301,74 @@ function NIRSAnalysis(ALLDATA)
             if condIdx2 > nCond, condIdx2 = 1; end
 
             nRows = size(AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chanCombos{1}), 1);
-            nCols = size(AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chanCombos{1}), 2) + size(AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chanCombos{1}), 2);
-            groupOneData = zeros(nRows, nCols, nChan);
-            groupTwoData = zeros(nRows, nCols, nChan);
+            totalSubj = size(AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chanCombos{1}), 2) + ...
+                size(AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chanCombos{1}), 2);
 
-            if doSubstractCond
+            g1_pooled = zeros(nRows, totalSubj, nChan);
+            g2_pooled = zeros(nRows, totalSubj, nChan);
 
-                for chanIdx = 1:nChan
-                    chan = chanCombos{chanIdx};
+            for chanIdx = 1:nChan
+                chan = chanCombos{chanIdx};
 
-                    groupOneData(:, :, chanIdx) = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
-                    groupTwoData(:, :, chanIdx) = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
+                if doSubstractCond
+                    dat1 = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan), ...
+                                AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
+                    dat2 = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(groupNames{1}).(condNames{subCondOpt}).(chan), ...
+                                AnalData.(groupNames{2}).(condNames{condOpt(condIdx2)}).(chan) - AnalData.(groupNames{2}).(condNames{subCondOpt}).(chan)];
+                else
+                    dat1 = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan)];
+                    dat2 = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx2)}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx2)}).(chan)];
+                end
 
+                g1_pooled(:, :, chanIdx) = dat1;
+                g2_pooled(:, :, chanIdx) = dat2;
+            end
+
+            % Average across channels
+            avgG1 = mean(g1_pooled, 3);
+            avgG2 = mean(g2_pooled, 3);
+
+            % Real T-stats
+            realDiff = avgG1 - avgG2;
+            nSubj = size(realDiff, 2);
+
+            realT = mean(realDiff, 2) ./ (std(realDiff, 0, 2) ./ sqrt(nSubj));
+
+            % Permutation
+            maxT_Null = zeros(nPerm, 1);
+
+            if useParallel
+
+                parfor permIdx = 1:nPerm
+                    % Flip signs per subject (same flip across all time points)
+                    flipSigns = (rand(1, nSubj) > 0.5) * 2 - 1;
+                    permDiff = realDiff .* flipSigns;
+
+                    % Fast T-stat
+                    m_p = mean(permDiff, 2);
+                    s_p = std(permDiff, 0, 2);
+                    shuffTs = m_p ./ (s_p ./ sqrt(nSubj));
+
+                    maxT_Null(permIdx) = max(abs(shuffTs));
                 end
 
             else
 
-                for chanIdx = 1:nChan
-                    chan = chanCombos{chanIdx};
-
-                    groupOneData(:, :, chanIdx) = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx)}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx)}).(chan)];
-                    groupTwoData(:, :, chanIdx) = [AnalData.(groupNames{1}).(condNames{condOpt(condIdx2)}).(chan), AnalData.(groupNames{2}).(condNames{condOpt(condIdx2)}).(chan)];
-
+                for permIdx = 1:nPerm
+                    flipSigns = (rand(1, nSubj) > 0.5) * 2 - 1;
+                    permDiff = realDiff .* flipSigns;
+                    shuffTs = mean(permDiff, 2) ./ (std(permDiff, 0, 2) ./ sqrt(nSubj));
+                    maxT_Null(permIdx) = max(abs(shuffTs));
                 end
 
             end
 
-            avgGroupOneData = mean(groupOneData, 3);
-            avgGroupTwoData = mean(groupTwoData, 3);
+            % Compare
+            tVals(:, condIdx) = realT;
+            pVals(:, condIdx) = mean(maxT_Null >= abs(realT)', 1)';
+            hVals(:, condIdx) = pVals(:, condIdx) < p;
 
             labels(condIdx) = sprintf("%s_%s", condNames{condOpt(condIdx)}, condNames{condOpt(condIdx2)});
-
-            for timeIdx = 1:nTime
-
-                % t-test across subjects at this time point
-                [~, ~, ~, stats] = ttest(avgGroupOneData(timeIdx, :), avgGroupTwoData(timeIdx, :));
-
-                dataDiff = avgGroupOneData(timeIdx, :) - avgGroupTwoData(timeIdx, :); % compute diff for dep t (Winkler et al 2016)
-
-                permT = zeros(nPerm, 1);
-
-                if useParallel % run in parallel if toolbox installed for performance
-
-                    % compute permuted t tests
-                    parfor permIdx = 1:nPerm
-
-                        flipSigns = (rand(size(dataDiff)) > 0.5) * 2 - 1; % *-1
-                        permDiff = dataDiff .* flipSigns;
-
-                        [~, ~, ~, permStats] = ttest(permDiff, 0);
-                        permT(permIdx) = permStats.tstat;
-                    end
-
-                else
-
-                    for permIdx = 1:nPerm
-
-                        flipSigns = (rand(size(dataDiff)) > 0.5) * 2 - 1; % *-1
-                        permDiff = dataDiff .* flipSigns;
-
-                        [~, ~, ~, permStats] = ttest(permDiff, 0);
-                        permT(permIdx) = permStats.tstat;
-                    end
-
-                end
-
-                tVals(timeIdx, condIdx) = stats.tstat;
-                pVals(timeIdx, condIdx) = mean(abs(permT) >= abs(stats.tstat));
-                hVals(timeIdx, condIdx) = pVals(timeIdx, condIdx) < p; % t-test across subjects at this time point
-
-            end
 
             disp("Average Mass-Uni Dependent T-test for " + condNames{condOpt(condIdx)} + "_" + condNames{condOpt(condIdx2)} + " done");
         end
