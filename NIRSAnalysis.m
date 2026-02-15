@@ -170,6 +170,11 @@ function NIRSAnalysis(ALLDATA)
     nPerm = 5000;
     p = 0.05;
 
+    % Select mult comp type
+    [multCompType, ~] = listdlg('ListString', {'FDR', 'T-Max'}, 'PromptString', 'Select multiple comparison correction type:', 'SelectionMode', 'single');
+    if isempty(multCompType), disp('Operation canceled. Shutting down'); return, end
+
+    % init parallel toolbox
     try
 
         if isempty(gcp('nocreate'))
@@ -223,7 +228,7 @@ function NIRSAnalysis(ALLDATA)
             for c = 1:nChan
 
                 for t = 1:nTime
-                    [~, ~, ~, stats] = ttest2(allG1(t, :, c), allG2(t, :, c));
+                    [~, ~, ~, stats] = ttest2(allG1(t, :, c), allG2(t, :, c), "Vartype", "unequal");
                     tVals(c, t, condIdx) = stats.tstat;
                 end
 
@@ -233,6 +238,7 @@ function NIRSAnalysis(ALLDATA)
             combinedData = cat(2, allG1, allG2); % Combine groups along subject dimension
             nSubj1 = size(allG1, 2);
             maxT_Null = zeros(nPerm, 1);
+            tNull_all = zeros(nPerm, nTime, nChan);
 
             if useParallel
 
@@ -261,6 +267,7 @@ function NIRSAnalysis(ALLDATA)
 
                     % Store only the highest absolute T from the entire shuffle
                     maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                    tNull_all(permIdx, :, :) = shuffTs;
                 end
 
             else
@@ -290,17 +297,45 @@ function NIRSAnalysis(ALLDATA)
 
                     % Store only the highest absolute T from the entire shuffle
                     maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                    tNull_all(permIdx, :, :) = shuffTs;
                 end
 
             end
 
             % compare
+            pVals_unc = zeros(nChan, nTime);
+            pVals_max = zeros(nChan, nTime);
+
             for c = 1:nChan
 
                 for t = 1:nTime
-                    pVals(c, t, condIdx) = mean(maxT_Null >= abs(tVals(c, t, condIdx)));
-                    hVals(c, t, condIdx) = pVals(c, t, condIdx) < p;
+
+                    % for FDR
+                    nullDist = squeeze(abs(tNull_all(:, t, c)));
+                    count_unc = sum(nullDist >= abs(tVals(c, t, condIdx)));
+                    pVals_unc(c, t) = (count_unc + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+                    % for maxT
+                    count_max = sum(maxT_Null >= abs(tVals(c, t, condIdx)));
+                    pVals_max(c, t) = (count_max + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
                 end
+
+            end
+
+            switch multCompType
+
+                case 1 % FDR
+
+                    pvec = reshape(pVals_unc, [], 1);
+                    [hvec, ~, adj_p] = fdr_bh(pvec, p, 'pdep');
+
+                    hVals(:, :, condIdx) = reshape(hvec, nChan, nTime);
+                    pVals(:, :, condIdx) = reshape(adj_p, nChan, nTime);
+
+                case 2 % T-MAX
+
+                    hVals(:, :, condIdx) = pVals_max < p;
+                    pVals(:, :, condIdx) = pVals_max;
 
             end
 
@@ -405,7 +440,7 @@ function NIRSAnalysis(ALLDATA)
         for c = 1:nChan
 
             for t = 1:nTime
-                [~, ~, ~, stats] = ttest2(allG1(t, :, c), allG2(t, :, c));
+                [~, ~, ~, stats] = ttest2(allG1(t, :, c), allG2(t, :, c), "Vartype", "unequal");
                 tVals(c, t) = stats.tstat;
             end
 
@@ -416,6 +451,7 @@ function NIRSAnalysis(ALLDATA)
         nSubj1 = size(allG1, 2);
         nTotal = size(combinedData, 2);
         maxT_Null = zeros(nPerm, 1);
+        tNull_all = zeros(nPerm, nTime, nChan);
 
         if useParallel % run in parallel if toolbox installed for performance
 
@@ -433,6 +469,7 @@ function NIRSAnalysis(ALLDATA)
 
                 % Store only the absolute maximum T found anywhere in this shuffle
                 maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                tNull_all(permIdx, :, :) = shuffTs;
             end
 
         else
@@ -450,22 +487,41 @@ function NIRSAnalysis(ALLDATA)
 
                 % Store only the absolute maximum T found anywhere in this shuffle
                 maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                tNull_all(permIdx, :, :) = shuffTs;
             end
 
         end
 
         % Compare
-        pVals = zeros(nChan, nTime);
+        pVals_unc = zeros(nChan, nTime);
+        pVals_max = zeros(nChan, nTime);
 
         for c = 1:nChan
 
             for t = 1:nTime
-                pVals(c, t) = mean(maxT_Null >= abs(tVals(c, t)));
+                % for FDR
+                nullDist = squeeze(abs(tNull_all(:, t, c)));
+                count_unc = sum(nullDist >= abs(tVals(c, t)));
+                pVals_unc(c, t) = (count_unc + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+                % for max T
+                count_max = sum(maxT_Null >= abs(tVals(c, t)));
+                pVals_max(c, t) = (count_max + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
             end
 
         end
 
-        hVals = pVals < p;
+        switch multCompType
+            case 1 % FDR
+                pvec = reshape(pVals_unc, [], 1);
+                [hvec, ~, adj_p] = fdr_bh(pvec, p, 'pdep');
+                hVals = reshape(hvec, nChan, nTime);
+                pVals = reshape(adj_p, nChan, nTime);
+
+            case 2 % T-MAX
+                pVals = pVals_max;
+                hVals = pVals_max < p;
+        end
 
         labels = string(strjoin(condNames(condOpt), "_"));
 
@@ -580,6 +636,7 @@ function NIRSAnalysis(ALLDATA)
                 % Max - T Permutation (Sign - Flipping)
                 nSubj = size(diffData, 2);
                 maxT_Null = zeros(nPerm, 1);
+                tNull_all = zeros(nPerm, nTime, nChan);
 
                 if useParallel
 
@@ -595,6 +652,7 @@ function NIRSAnalysis(ALLDATA)
                         shuffTs = m ./ (s / sqrt(nSubj));
 
                         maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                        tNull_all(permIdx, :, :) = shuffTs;
                     end
 
                 else
@@ -611,22 +669,47 @@ function NIRSAnalysis(ALLDATA)
                         shuffTs = m ./ (s / sqrt(nSubj));
 
                         maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                        tNull_all(permIdx, :, :) = shuffTs;
                     end
 
                 end
 
                 % Compare
+                pVals_unc = zeros(nChan, nTime);
+                pVals_max = zeros(nChan, nTime);
+
                 for c = 1:nChan
 
                     for t = 1:nTime
                         tStat = currentTVals(t, c);
                         tVals(c, t, condIdx, grpIdx) = tStat;
-                        pVals(c, t, condIdx, grpIdx) = mean(maxT_Null >= abs(tStat));
+
+                        % FDR
+                        nullDist = squeeze(abs(tNull_all(:, t, c)));
+                        count_unc = sum(nullDist >= abs(tStat));
+                        pVals_unc(c, t) = (count_unc + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+                        % maxT
+                        count_max = sum(maxT_Null >= abs(tStat));
+                        pVals_max(c, t) = (count_max + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
                     end
 
                 end
 
-                hVals(:, :, condIdx, grpIdx) = pVals(:, :, condIdx, grpIdx) < p;
+                switch multCompType
+
+                    case 1 % FDR
+                        pvec = reshape(pVals_unc, [], 1);
+                        [hvec, ~, adj_p] = fdr_bh(pvec, p, 'pdep');
+
+                        hVals(:, :, condIdx, grpIdx) = reshape(hvec, nChan, nTime);
+                        pVals(:, :, condIdx, grpIdx) = reshape(adj_p, nChan, nTime);
+
+                    case 2 % maxT
+                        pVals(:, :, condIdx, grpIdx) = pVals_max;
+                        hVals(:, :, condIdx, grpIdx) = pVals_max < p;
+
+                end
 
                 disp("Mass-Uni Dependent T-test for " + group + "-" + condNames{condOpt(condIdx)} + "_" + condNames{condOpt(condIdx2)} + " done");
             end
@@ -743,6 +826,7 @@ function NIRSAnalysis(ALLDATA)
             % Max-T Permutation (Sign-Flipping pooled subjects)
             nSubjTotal = size(diffData, 2);
             maxT_Null = zeros(nPerm, 1);
+            tNull_all = zeros(nPerm, nTime, nChan);
 
             if useParallel
 
@@ -757,6 +841,7 @@ function NIRSAnalysis(ALLDATA)
                     shuffTs = m ./ (s / sqrt(nSubjTotal));
 
                     maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                    tNull_all(permIdx, :, :) = shuffTs;
                 end
 
             else
@@ -772,22 +857,47 @@ function NIRSAnalysis(ALLDATA)
                     shuffTs = m ./ (s / sqrt(nSubjTotal));
 
                     maxT_Null(permIdx) = max(abs(shuffTs(:)));
+                    tNull_all(permIdx, :, :) = shuffTs;
                 end
 
             end
 
             % Compare Real vs Null
+            pVals_unc = zeros(nChan, nTime);
+            pVals_max = zeros(nChan, nTime);
+
             for c = 1:nChan
 
                 for t = 1:nTime
                     tStat = currentTVals(t, c);
+
+                    % FDR
+                    nullDist = squeeze(abs(tNull_all(:, t, c)));
+                    count_unc = sum(nullDist >= abs(tStat));
+                    pVals_unc(c, t) = (count_unc + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+                    % maxT
+                    count_max = sum(maxT_Null >= abs(tStat));
+                    pVals_max(c, t) = (count_max + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
                     tVals(c, t, condIdx) = tStat;
-                    pVals(c, t, condIdx) = mean(maxT_Null >= abs(tStat));
                 end
 
             end
 
-            hVals(:, :, condIdx) = pVals(:, :, condIdx) < p;
+            switch multCompType
+
+                case 1 % FDR
+                    pvec = reshape(pVals_unc, [], 1);
+                    [hvec, ~, adj_p] = fdr_bh(pvec, p, 'pdep');
+
+                    hVals(:, :, condIdx) = reshape(hvec, nChan, nTime);
+                    pVals(:, :, condIdx) = reshape(adj_p, nChan, nTime);
+
+                case 2 % Tmax
+                    pVals(:, :, condIdx) = pVals_max;
+                    hVals(:, :, condIdx) = pVals_max < p;
+            end
 
             disp("Mass-Uni Independent T-test for " + condNames{condOpt(condIdx)} + "_" + condNames{condOpt(condIdx2)} + " done");
         end
@@ -888,7 +998,7 @@ function NIRSAnalysis(ALLDATA)
             realT = zeros(nTime, 1);
 
             for t = 1:nTime
-                [~, ~, ~, stats] = ttest2(avgG1(t, :), avgG2(t, :));
+                [~, ~, ~, stats] = ttest2(avgG1(t, :), avgG2(t, :), 'Vartype', 'unequal');
                 realT(t) = stats.tstat;
             end
 
@@ -897,6 +1007,7 @@ function NIRSAnalysis(ALLDATA)
             nSubj1 = size(avgG1, 2);
             nTotal = size(combinedData, 2);
             maxT_Null = zeros(nPerm, 1);
+            tNull_all = zeros(nPerm, nTime);
 
             if useParallel
 
@@ -913,6 +1024,7 @@ function NIRSAnalysis(ALLDATA)
 
                     % Max T across the time dimension
                     maxT_Null(permIdx) = max(abs(shuffTs));
+                    tNull_all(permIdx, :) = shuffTs;
                 end
 
             else
@@ -930,17 +1042,41 @@ function NIRSAnalysis(ALLDATA)
 
                     % Max T across the time dimension
                     maxT_Null(permIdx) = max(abs(shuffTs));
+                    tNull_all(permIdx, :) = shuffTs;
                 end
 
             end
 
             % Compare
+            pVals_unc = zeros(nTime, 1);
+            pVals_max = zeros(nTime, 1);
+
             for t = 1:nTime
-                tVals(t, condIdx) = realT(t);
-                pVals(t, condIdx) = mean(maxT_Null >= abs(realT(t)));
+                tStat = realT(t);
+
+                % FDR
+                nullDist = abs(tNull_all(:, t));
+                count_unc = sum(nullDist >= abs(tStat));
+                pVals_unc(t) = (count_unc + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+                % maxT
+                count_max = sum(maxT_Null >= abs(tStat));
+                pVals_max(t) = (count_max + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+                tVals(t, condIdx) = tStat;
             end
 
-            hVals(:, condIdx) = pVals(:, condIdx) < p;
+            switch multCompType
+
+                case 1 % FDR
+                    [hvec, ~, adj_p] = fdr_bh(pVals_unc, p, 'pdep');
+                    hVals(:, condIdx) = hvec;
+                    pVals(:, condIdx) = adj_p;
+
+                case 2 % Tmax
+                    pVals(:, condIdx) = pVals_max;
+                    hVals(:, condIdx) = pVals_max < p;
+            end
 
             disp("Average Mass-Uni Independent T-test for condition " + cond + " done");
         end
@@ -1041,7 +1177,7 @@ function NIRSAnalysis(ALLDATA)
         realT = zeros(nTime, 1);
 
         for t = 1:nTime
-            [~, ~, ~, stats] = ttest2(avgG1(t, :), avgG2(t, :));
+            [~, ~, ~, stats] = ttest2(avgG1(t, :), avgG2(t, :), 'Vartype', 'unequal');
             realT(t) = stats.tstat;
         end
 
@@ -1050,6 +1186,7 @@ function NIRSAnalysis(ALLDATA)
         nSubj1 = size(avgG1, 2);
         nTotal = size(combinedData, 2);
         maxT_Null = zeros(nPerm, 1);
+        tNull_all = zeros(nPerm, nTime);
 
         if useParallel
 
@@ -1065,6 +1202,7 @@ function NIRSAnalysis(ALLDATA)
 
                 % Capture Max absolute T across the time dimension
                 maxT_Null(permIdx) = max(abs(shuffTs));
+                tNull_all(permIdx, :) = shuffTs;
             end
 
         else
@@ -1077,14 +1215,38 @@ function NIRSAnalysis(ALLDATA)
                 v1 = var(pG1, 0, 2); v2 = var(pG2, 0, 2);
                 shuffTs = (m1 - m2) ./ sqrt(v1 / nSubj1 + v2 / (nTotal - nSubj1));
                 maxT_Null(permIdx) = max(abs(shuffTs));
+                tNull_all(permIdx, :) = shuffTs;
             end
 
         end
 
         % Compare
-        pVals = mean(maxT_Null >= abs(realT)', 1)';
+        pVals_unc = zeros(nTime, 1);
+        pVals_max = zeros(nTime, 1);
+
+        for t = 1:nTime
+            % FDR
+            nullDist = abs(tNull_all(:, t));
+            count_unc = sum(nullDist >= abs(realT(t)));
+            pVals_unc(t) = (count_unc + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+            % maxT
+            count_max = sum(maxT_Null >= abs(realT(t)));
+            pVals_max(t) = (count_max + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+        end
+
+        switch multCompType
+
+            case 1 % FDR
+                [hVals, ~, adj_p] = fdr_bh(pVals_unc, p, 'pdep');
+                pVals = adj_p;
+
+            case 2 % maxT
+                pVals = pVals_max;
+                hVals = pVals_max < p;
+        end
+
         tVals = realT;
-        hVals = pVals < p;
 
         labels = string(strjoin(condNames(condOpt), "_"));
 
@@ -1193,6 +1355,7 @@ function NIRSAnalysis(ALLDATA)
 
                 % Permutation
                 maxT_Null = zeros(nPerm, 1);
+                tNull_all = zeros(nPerm, nTime);
 
                 if useParallel
 
@@ -1206,6 +1369,7 @@ function NIRSAnalysis(ALLDATA)
                         shuffTs = m_p ./ (s_p ./ sqrt(nSubj));
 
                         maxT_Null(permIdx) = max(abs(shuffTs));
+                        tNull_all(permIdx, :) = shuffTs;
                     end
 
                 else
@@ -1215,14 +1379,40 @@ function NIRSAnalysis(ALLDATA)
                         permDiff = realDiff .* flipSigns;
                         shuffTs = mean(permDiff, 2) ./ (std(permDiff, 0, 2) ./ sqrt(nSubj));
                         maxT_Null(permIdx) = max(abs(shuffTs));
+                        tNull_all(permIdx, :) = shuffTs;
                     end
 
                 end
 
                 % Compare
+                p_unc = zeros(nTime, 1);
+                p_max = zeros(nTime, 1);
+
+                for t = 1:nTime
+                    % FDR
+                    nullDist = abs(tNull_all(:, t));
+                    count_unc = sum(nullDist >= abs(realT(t)));
+                    p_unc(t) = (count_unc + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+                    % maxT
+                    count_max = sum(maxT_Null >= abs(realT(t)));
+                    p_max(t) = (count_max + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+                end
+
+                switch multCompType
+
+                    case 1 % FDR
+                        [hvec, ~, adj_p] = fdr_bh(p_unc, p, 'pdep');
+                        pVals(:, condIdx, grpIdx) = adj_p;
+                        hVals(:, condIdx, grpIdx) = hvec;
+
+                    case 2 % Tmax
+                        pVals(:, condIdx, grpIdx) = p_max;
+                        hVals(:, condIdx, grpIdx) = p_max < p;
+
+                end
+
                 tVals(:, condIdx, grpIdx) = realT;
-                pVals(:, condIdx, grpIdx) = mean(maxT_Null >= abs(realT)', 1)';
-                hVals(:, condIdx, grpIdx) = pVals(:, condIdx, grpIdx) < p;
 
                 disp("Average Mass-Uni Dependent T-test for " + group + "-" + condNames{condOpt(condIdx)} + "_" + condNames{condOpt(condIdx2)} + " done");
             end
@@ -1336,6 +1526,7 @@ function NIRSAnalysis(ALLDATA)
 
             % Permutation
             maxT_Null = zeros(nPerm, 1);
+            tNull_all = zeros(nPerm, nTime);
 
             if useParallel
 
@@ -1350,6 +1541,7 @@ function NIRSAnalysis(ALLDATA)
                     shuffTs = m_p ./ (s_p ./ sqrt(nSubj));
 
                     maxT_Null(permIdx) = max(abs(shuffTs));
+                    tNull_all(permIdx, :) = shuffTs;
                 end
 
             else
@@ -1359,14 +1551,39 @@ function NIRSAnalysis(ALLDATA)
                     permDiff = realDiff .* flipSigns;
                     shuffTs = mean(permDiff, 2) ./ (std(permDiff, 0, 2) ./ sqrt(nSubj));
                     maxT_Null(permIdx) = max(abs(shuffTs));
+                    tNull_all(permIdx, :) = shuffTs;
                 end
 
             end
 
             % Compare
+            p_unc = zeros(nTime, 1);
+            p_max = zeros(nTime, 1);
+
+            for t = 1:nTime
+                % FDR
+                nullDist = abs(tNull_all(:, t));
+                count_unc = sum(nullDist >= abs(realT(t)));
+                p_unc(t) = (count_unc + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+
+                % maxT
+                count_max = sum(maxT_Null >= abs(realT(t)));
+                p_max(t) = (count_max + 1) / (nPerm + 1); % correction to avoid 0 or 1 p
+            end
+
+            switch multCompType
+
+                case 1 % FDR
+                    [hvec, ~, adj_p] = fdr_bh(p_unc, p, 'pdep');
+                    pVals(:, condIdx) = adj_p;
+                    hVals(:, condIdx) = hvec;
+
+                case 2 % Tmax
+                    pVals(:, condIdx) = p_max;
+                    hVals(:, condIdx) = p_max < p;
+            end
+
             tVals(:, condIdx) = realT;
-            pVals(:, condIdx) = mean(maxT_Null >= abs(realT)', 1)';
-            hVals(:, condIdx) = pVals(:, condIdx) < p;
 
             labels(condIdx) = sprintf("%s_%s", condNames{condOpt(condIdx)}, condNames{condOpt(condIdx2)});
 
